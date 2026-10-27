@@ -2837,6 +2837,7 @@ const make = Effect.gen(function* () {
           ...(parent === undefined ? {} : { senderThreadId: parent.thread.id }),
           messageId,
           text: input.message,
+          ...(input.codexOutputSchema ? { codexOutputSchema: input.codexOutputSchema } : {}),
           attachments: [],
           mode,
           createdBy: "agent",

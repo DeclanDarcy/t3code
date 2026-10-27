@@ -31,6 +31,8 @@ import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as EffectWorker from "./orchestration-v2/EffectWorker.ts";
+import * as CampaignController from "./orchestration-v2/CampaignController.ts";
+import * as CampaignCreation from "./orchestration-v2/CampaignCreation.ts";
 import * as LegacyV1ThreadImporter from "./orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
@@ -69,6 +71,8 @@ it.effect.each([
       };
       const imports = { importedThreadCount: 0, importedMessageCount: 0 };
       const dependencies = Layer.mergeAll(
+        Layer.mock(CampaignController.CampaignController)({ run: Effect.never }),
+        Layer.mock(CampaignCreation.CampaignCreation)({ run: Effect.never }),
         NodeCrypto.layer,
         Path.layer,
         Layer.mock(ServerConfig.ServerConfig)({

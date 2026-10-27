@@ -12,9 +12,27 @@ import {
   resolveActiveThreadRouteRef,
   resolveThreadRouteRenderState,
   resolveThreadRouteTarget,
+  resolveCampaignPaneTarget,
 } from "./threadRoutes";
 
 describe("threadRoutes", () => {
+  it("scopes focused campaign commands to their owning route and environment", () => {
+    const focused = {
+      campaignId: "campaign:one",
+      threadRef: scopeThreadRef("env-1" as never, ThreadId.make("cognitive")),
+    };
+    expect(resolveCampaignPaneTarget({}, null)).toBeNull();
+    expect(
+      resolveCampaignPaneTarget({ environmentId: "env-1", campaignId: "campaign:one" }, focused),
+    ).toEqual({ kind: "server", threadRef: focused.threadRef });
+    expect(
+      resolveCampaignPaneTarget({ environmentId: "env-2", campaignId: "campaign:one" }, focused),
+    ).toBeNull();
+    expect(
+      resolveCampaignPaneTarget({ environmentId: "env-1", campaignId: "campaign:two" }, focused),
+    ).toBeNull();
+    expect(resolveCampaignPaneTarget({}, focused)).toBeNull();
+  });
   it("matches only the thread's own route pathname", () => {
     const ref = scopeThreadRef("env-1" as never, ThreadId.make("thread-1"));
 

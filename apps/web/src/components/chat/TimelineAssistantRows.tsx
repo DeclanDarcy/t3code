@@ -4,6 +4,8 @@ import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thr
 import { memo, use, useState } from "react";
 import { type ChatMessage, type TurnDiffSummary } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
+import { CognitiveConversationContext } from "../campaignConversation";
+import { campaignDecisionPresentation } from "./campaignDecisionPresentation";
 import { GitForkIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { ProposedPlanCard } from "./ProposedPlanCard";
@@ -25,7 +27,10 @@ import { MESSAGE_HEADING_LEVEL, MessageAuthorHeading } from "./TimelineRowParts"
 
 export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
-  const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const cognitive = use(CognitiveConversationContext);
+  const originalText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const messageText =
+    cognitive && !row.message.streaming ? campaignDecisionPresentation(originalText) : originalText;
 
   return (
     <>

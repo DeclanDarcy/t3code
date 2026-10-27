@@ -1343,6 +1343,7 @@ export const layer: Layer.Layer<
         loadRunInterruptReason: runControls.loadRunInterruptReason,
         message: {
           messageId: message.id,
+          ...(message.codexOutputSchema ? { codexOutputSchema: message.codexOutputSchema } : {}),
           text: userText,
           attachments: message.attachments,
           createdBy: message.createdBy,

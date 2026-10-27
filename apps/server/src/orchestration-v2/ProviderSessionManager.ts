@@ -188,6 +188,7 @@ export class ProviderSessionManagerV2 extends Context.Service<
 >()("t3/orchestration-v2/ProviderSessionManager/ProviderSessionManagerV2") {}
 
 interface LiveSessionEntry {
+  readonly continuationKey: string | undefined;
   readonly attachedThreadIds: ReadonlySet<ThreadId>;
   readonly loadedProviderThreadKeyByThread: ReadonlyMap<ThreadId, string>;
   /** Scope revocation to recorded credential ids so superseded sessions cannot revoke replacements opened before detach. */
@@ -1329,7 +1330,11 @@ export const layerWithOptions = (
               Effect.uninterruptible,
             );
             if (attached !== undefined) {
-              const prepared = yield* prepareMcpSession(input.threadId, input.providerInstanceId);
+              const prepared =
+                attached.mcpSessionPolicy !== "disabled"
+                  ? yield* prepareMcpSession(input.threadId, input.providerInstanceId)
+                  : (yield* clearMcpSession(input.threadId),
+                    { mcpCredentialId: undefined, issued: false });
               preparedForCleanup = prepared;
               if (prepared.mcpCredentialId !== undefined) {
                 const mcpCredentialId = prepared.mcpCredentialId;
@@ -2066,7 +2071,26 @@ export const layerWithOptions = (
               }
               const key = sessionKey(input.providerSessionId);
               const existing = (yield* Ref.get(sessions)).get(key);
+              const metadata = registry.getMetadata
+                ? yield* registry.getMetadata(input.modelSelection.instanceId).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderSessionOpenError({
+                          instanceId: input.modelSelection.instanceId,
+                          providerSessionId: input.providerSessionId,
+                          cause,
+                        }),
+                    ),
+                  )
+                : undefined;
               if (existing !== undefined) {
+                if (existing.continuationKey !== metadata?.continuationKey)
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause:
+                      "Provider configuration changed; stop the existing session before resuming.",
+                  });
                 const attached = existing.attachedThreadIds.has(input.threadId);
                 if (!attached && !existing.supportsMultipleProviderThreads) {
                   return yield* new ProviderSessionOpenError({
@@ -2095,10 +2119,11 @@ export const layerWithOptions = (
                     }),
                 ),
               );
-              const prepared = yield* prepareMcpSession(
-                input.threadId,
-                input.modelSelection.instanceId,
-              );
+              const prepared =
+                adapter.mcpSessionPolicy !== "disabled"
+                  ? yield* prepareMcpSession(input.threadId, input.modelSelection.instanceId)
+                  : (yield* clearMcpSession(input.threadId),
+                    { mcpCredentialId: undefined, issued: false });
               const mcpCredentialId = prepared.mcpCredentialId;
               let reservationDropped = mcpCredentialId === undefined;
               const dropReservation = Effect.sync(() => {
@@ -2165,6 +2190,7 @@ export const layerWithOptions = (
               const exposedRuntime = decorateRuntime(runtime, eventSubscribers);
               const now = yield* Clock.currentTimeMillis;
               const entry: LiveSessionEntry = {
+                continuationKey: metadata?.continuationKey,
                 attachedThreadIds: new Set([input.threadId]),
                 loadedProviderThreadKeyByThread: new Map(),
                 mcpCredentialIdByThread:

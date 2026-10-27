@@ -17,6 +17,8 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as CampaignController from "./orchestration-v2/CampaignController.ts";
+import * as CampaignCreation from "./orchestration-v2/CampaignCreation.ts";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -564,6 +566,8 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
       ).pipe(Effect.map((targets): AutoBootstrapWelcomeTargets => targets)),
     });
     yield* Effect.logInfo("V2 orchestration recovery completed", recovery);
+    yield* (yield* CampaignController.CampaignController).run.pipe(Effect.forkScoped);
+    yield* (yield* CampaignCreation.CampaignCreation).run.pipe(Effect.forkScoped);
     // Runs after activation: the status check fetches every enabled project's
     // remote, and awaiting it here held command readiness for that long.
     yield* runStartupPhase(

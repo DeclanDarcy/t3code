@@ -766,6 +766,29 @@ describe("composerDraftStore project draft thread mapping", () => {
     resetComposerDraftStore();
   });
 
+  it("preserves separate campaign drafts and their submission kind across target changes and persistence", () => {
+    const store = useComposerDraftStore.getState();
+    const key = scopedProjectKey(projectRef);
+    store.setLogicalProjectDraftThreadId(key, projectRef, draftId, { threadId });
+    store.setLogicalProjectDraftThreadId(`campaign:${key}`, projectRef, otherDraftId, {
+      threadId: otherThreadId,
+      submissionKind: "campaign",
+    });
+    store.setPrompt(draftId, "ordinary input");
+    store.setPrompt(otherDraftId, "Café λ\nKeep  spaces.\n");
+    store.setDraftThreadContext(otherDraftId, { projectRef: remoteProjectRef });
+    expect(useComposerDraftStore.getState().getDraftSession(draftId)?.submissionKind).toBe(
+      "thread",
+    );
+    expect(useComposerDraftStore.getState().getDraftSession(otherDraftId)?.submissionKind).toBe(
+      "campaign",
+    );
+    const persisted = partializeComposerDraftStoreState(useComposerDraftStore.getState());
+    expect(persisted.draftThreadsByThreadKey[otherDraftId]?.submissionKind).toBe("campaign");
+    expect(store.getComposerDraft(draftId)?.prompt).toBe("ordinary input");
+    expect(store.getComposerDraft(otherDraftId)?.prompt).toBe("Café λ\nKeep  spaces.\n");
+  });
+
   it("clears composer data for one environment without touching another", () => {
     const store = useComposerDraftStore.getState();
     const localThreadRef = scopeThreadRef(TEST_ENVIRONMENT_ID, threadId);

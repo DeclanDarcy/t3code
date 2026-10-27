@@ -75,6 +75,7 @@ export interface ThreadLaunchInitialMessage {
 }
 
 export interface ThreadLaunchInput {
+  readonly awaitPreparation?: boolean;
   readonly commandId: CommandId;
   readonly threadId?: ThreadId;
   readonly reuseExistingThread?: boolean;
@@ -100,7 +101,7 @@ export interface ThreadLaunchInput {
 
 type PreparationInput = Pick<
   ThreadLaunchInput,
-  "commandId" | "projectId" | "workspaceStrategy" | "initialMessage"
+  "commandId" | "projectId" | "workspaceStrategy" | "initialMessage" | "awaitPreparation"
 > & {
   readonly reusedWorktree?: { readonly baseRef: string };
 };
@@ -668,7 +669,8 @@ const make = Effect.gen(function* () {
           if (
             tracked &&
             createdWorktreePath &&
-            ((cancelled && !runReleased) || !workspaceRecorded)
+            ((cancelled && !runReleased && !(input.awaitPreparation && runId === null)) ||
+              !workspaceRecorded)
           ) {
             if (branchRename !== null) yield* Fiber.interrupt(branchRename);
             const removedPath = createdWorktreePath;
@@ -984,18 +986,26 @@ const make = Effect.gen(function* () {
         const runIsPreparing =
           runId !== null &&
           projection.runs.some((run) => run.id === runId && run.status === "preparing");
-        const shouldSchedule = runId === null ? Option.isNone(launchReceipt) : runIsPreparing;
+        const shouldSchedule =
+          input.awaitPreparation ||
+          (runId === null ? Option.isNone(launchReceipt) : runIsPreparing);
         const boundWorktreePath = projection.thread.worktreePath;
         const preparationStrategy: ThreadLaunchWorkspaceStrategy =
-          Option.isSome(launchReceipt) &&
-          workspaceStrategy.type === "root" &&
-          boundWorktreePath !== null
+          input.awaitPreparation && boundWorktreePath !== null
             ? {
                 type: "existing_worktree",
                 worktreePath: boundWorktreePath,
-                branch: workspaceStrategy.branch,
+                ...(projection.thread.branch ? { branch: projection.thread.branch } : {}),
               }
-            : workspaceStrategy;
+            : Option.isSome(launchReceipt) &&
+                workspaceStrategy.type === "root" &&
+                boundWorktreePath !== null
+              ? {
+                  type: "existing_worktree",
+                  worktreePath: boundWorktreePath,
+                  branch: workspaceStrategy.branch,
+                }
+              : workspaceStrategy;
         if (shouldSchedule) {
           const ownsPreparation = yield* reservePreparation(input.commandId);
           if (ownsPreparation) {
@@ -1010,11 +1020,18 @@ const make = Effect.gen(function* () {
                       Effect.mapError(mapError(input, "update-thread", threadId)),
                     );
               if (preparationStillRequired) {
-                yield* schedulePreparation(
-                  { ...input, workspaceStrategy: preparationStrategy },
-                  threadId,
-                  runId,
-                );
+                if (input.awaitPreparation) {
+                  yield* prepareInBackground(
+                    { ...input, workspaceStrategy: preparationStrategy },
+                    threadId,
+                    runId,
+                  ).pipe(Effect.ensuring(releasePreparation(input.commandId)));
+                } else
+                  yield* schedulePreparation(
+                    { ...input, workspaceStrategy: preparationStrategy },
+                    threadId,
+                    runId,
+                  );
               } else {
                 yield* releasePreparation(input.commandId);
               }

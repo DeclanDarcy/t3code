@@ -1408,3 +1408,118 @@ it.effect("dispatch records the command outcome and its duration", () =>
     assert.strictEqual((yield* durations).count - durationsBefore, 1);
   }).pipe(Effect.provide(layerTest)),
 );
+
+it.effect("persists a turn-local output schema without adding it to subsequent messages", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:cognitive-schema");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-schema"),
+      threadId,
+      projectId: ProjectId.make("project:schema"),
+      title: "Schema",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const schema = {
+      type: "object",
+      properties: { answer: { type: "string" } },
+      required: ["answer"],
+      additionalProperties: false,
+    };
+    for (const [id, codexOutputSchema] of [
+      ["schema-message", schema],
+      ["plain-message", undefined],
+    ] as const) {
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(id),
+        threadId,
+        messageId: MessageId.make(id),
+        text: "Answer",
+        attachments: [],
+        codexOutputSchema,
+        dispatchMode: { type: "defer_start" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+    }
+    const projection = yield* projections.getThreadProjection(threadId);
+    assert.deepEqual(
+      projection.messages.find((message) => message.id === "schema-message")?.codexOutputSchema,
+      schema,
+    );
+    assert.isUndefined(
+      projection.messages.find((message) => message.id === "plain-message")?.codexOutputSchema,
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("rejects cognitive model changes through the real persisted provider-context read", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:cognitive-model-binding");
+    const providerThreadId = ProviderThreadId.make("native:cognitive-model-binding");
+    const selection = { instanceId, model: "gpt-6.1-sol" };
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-cognitive-model-binding"),
+      threadId,
+      projectId: ProjectId.make("project:profile"),
+      title: "Cognitive",
+      modelSelection: selection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const now = yield* DateTime.now;
+    yield* projections.apply({
+      id: EventId.make("cognitive-model-binding"),
+      type: "provider-thread.updated",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: providerThreadId,
+        driver: adapter.driver,
+        providerInstanceId: instanceId,
+        providerSessionId: null,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: null,
+        nativeConversationHeadRef: null,
+        nativeMetadata: { codexCognitiveProfile: "cognitive-v1:pinned" },
+        status: "idle",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    const result = yield* Effect.result(
+      orchestrator.dispatch({
+        type: "thread.model-selection.set",
+        commandId: CommandId.make("switch-cognitive-model"),
+        threadId,
+        modelSelection: { instanceId, model: "gpt-6-astra" },
+      }),
+    );
+    assert.isTrue(Result.isFailure(result));
+    assert.deepEqual(
+      (yield* projections.getThreadProjection(threadId)).thread.modelSelection,
+      selection,
+    );
+  }).pipe(Effect.provide(layerTest)),
+);

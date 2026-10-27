@@ -130,7 +130,7 @@ import {
   isUnsupportedWindowsProjectPath,
   resolveProjectPathForDispatch,
 } from "../lib/projectPaths";
-import { onOpenCommandPalette } from "../commandPaletteBus";
+import { onOpenCommandPalette, openCommandPalette } from "../commandPaletteBus";
 import { isPreviewFocused } from "../lib/previewFocus";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import {
@@ -234,7 +234,11 @@ import { CommandDialog, CommandDialogPopup, CommandFooterAction } from "./ui/com
 import { Button } from "./ui/button";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
-import { ComposerHandleContext, useComposerHandleContext } from "../composerHandleContext";
+import {
+  ComposerHandleContext,
+  ComposerHandleActivationContext,
+  useComposerHandleContext,
+} from "../composerHandleContext";
 import type { ChatComposerHandle } from "./chat/ChatComposer";
 import { buildSidebarProjectPickerEntries } from "../sidebarProjectGrouping";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
@@ -245,6 +249,7 @@ import { threadRecentUse } from "@t3tools/shared/paletteSearch";
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 
 export function CommandPalette({ children }: { children: ReactNode }) {
+  const [campaignCreation, setCampaignCreation] = useState(false);
   const navigate = useNavigate();
   const usagePageOpen = useLocation({ select: (location) => location.pathname === "/usage" });
   const [state, dispatch] = useReducer(reduceCommandPaletteUiState, {
@@ -262,6 +267,12 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const { theme, themeHalves, resolvedTheme, appearanceMode, setAppearanceMode } = useTheme();
   const composerHandleRef = useRef<ChatComposerHandle | null>(null);
+  const activateComposer = useStableCallback(
+    (handle: ChatComposerHandle | null, previous?: ChatComposerHandle | null) => {
+      if (previous === undefined || composerHandleRef.current === previous)
+        composerHandleRef.current = handle;
+    },
+  );
   const routeTarget = useThreadRouteTarget();
   const routeThreadRef = routeTarget?.kind === "server" ? routeTarget.threadRef : null;
   const terminalOpen = useTerminalUiStateStore((state) =>
@@ -369,6 +380,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   useEffect(
     () =>
       onOpenCommandPalette((detail) => {
+        setCampaignCreation(detail.campaign === true);
         if (detail.open === "new-thread-in") {
           openNewThreadIn();
         } else if (detail.open === "add-project") {
@@ -387,35 +399,39 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   );
 
   return (
-    <ComposerHandleContext value={composerHandleRef}>
-      <CommandDialog
-        open={state.open}
-        onOpenChange={(open, eventDetails) => {
-          if (!open && eventDetails.reason === "escape-key" && state.mode !== "command") {
-            eventDetails.cancel();
-            dispatch({ _tag: "BackToCommand" });
-            return;
-          }
-          setOpen(open);
-        }}
-      >
-        <div className="contents" inert={state.open}>
-          {children}
-        </div>
-        <CommandPaletteDialog
-          mode={state.mode}
-          openIntent={state.openIntent}
-          setOpen={setOpen}
-          openChildSearch={openChildSearch}
-          initialContext={state.restoredSearch}
-          clearOpenIntent={clearOpenIntent}
-        />
-      </CommandDialog>
-    </ComposerHandleContext>
+    <ComposerHandleActivationContext value={activateComposer}>
+      <ComposerHandleContext value={composerHandleRef}>
+        <CommandDialog
+          open={state.open}
+          onOpenChange={(open, eventDetails) => {
+            if (!open && eventDetails.reason === "escape-key" && state.mode !== "command") {
+              eventDetails.cancel();
+              dispatch({ _tag: "BackToCommand" });
+              return;
+            }
+            setOpen(open);
+          }}
+        >
+          <div className="contents" inert={state.open}>
+            {children}
+          </div>
+          <CommandPaletteDialog
+            campaignCreation={campaignCreation}
+            mode={state.mode}
+            openIntent={state.openIntent}
+            setOpen={setOpen}
+            openChildSearch={openChildSearch}
+            initialContext={state.restoredSearch}
+            clearOpenIntent={clearOpenIntent}
+          />
+        </CommandDialog>
+      </ComposerHandleContext>
+    </ComposerHandleActivationContext>
   );
 }
 
 function CommandPaletteDialog(props: {
+  readonly campaignCreation: boolean;
   readonly mode: SearchOverlayMode;
   readonly openIntent: CommandPaletteOpenIntent | null;
   readonly setOpen: (open: boolean) => void;
@@ -457,6 +473,7 @@ function CommandPaletteDialog(props: {
         <ProjectContentSearchDialog onOpenChange={props.setOpen} />
       ) : (
         <OpenCommandPaletteDialog
+          campaignCreation={props.campaignCreation}
           openIntent={props.openIntent}
           setOpen={props.setOpen}
           openChildSearch={props.openChildSearch}
@@ -469,6 +486,7 @@ function CommandPaletteDialog(props: {
 }
 
 function OpenCommandPaletteDialog(props: {
+  readonly campaignCreation: boolean;
   readonly openIntent: CommandPaletteOpenIntent | null;
   readonly setOpen: (open: boolean) => void;
   readonly openChildSearch: (
@@ -884,6 +902,7 @@ function OpenCommandPaletteDialog(props: {
             contextualRefBelongsToGroup
               ? contextualProjectRef
               : scopeProjectRef(project.environmentId, project.id),
+            { submissionKind: props.campaignCreation ? "campaign" : "thread" },
           );
         },
       }),
@@ -900,7 +919,11 @@ function OpenCommandPaletteDialog(props: {
         title: "No project",
         icon: <MessageSquareDashedIcon className={ITEM_ICON_CLASS} />,
         shortcutCommand: "chat.newWithoutProject" as const,
-        run: () => startScratchThread(scratchTargetEnvironmentId),
+        run: () =>
+          startScratchThread(
+            scratchTargetEnvironmentId,
+            props.campaignCreation ? "campaign" : "thread",
+          ),
       },
       ...projectItems.slice(noProjectIndex),
     ];
@@ -1247,6 +1270,14 @@ function OpenCommandPaletteDialog(props: {
       icon: <SquarePenIcon className={ITEM_ICON_CLASS} />,
       addonIcon: <SquarePenIcon className={ADDON_ICON_CLASS} />,
       groups: [{ value: "projects", label: "Projects", items: projectThreadItems }],
+    });
+    actionItems.push({
+      kind: "action",
+      value: "action:new-campaign",
+      title: "New campaign…",
+      searchTerms: ["campaign", "autonomous", "experiment", "qualification"],
+      icon: <SquarePenIcon className={ITEM_ICON_CLASS} />,
+      run: async () => openCommandPalette({ open: "new-thread-in", campaign: true }),
     });
   }
 

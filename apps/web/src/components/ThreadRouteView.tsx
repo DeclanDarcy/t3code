@@ -57,7 +57,7 @@ export function ThreadRouteView({
     target.kind === "draft" ? serverThreadRef : null,
   );
   const canonicalThreadRef =
-    target.kind === "draft"
+    target.kind === "draft" && draftSession?.submissionKind !== "campaign"
       ? resolveDraftPromotionNavigationTarget({
           serverThreadRef,
           serverThread,
@@ -114,11 +114,15 @@ export function ThreadRouteView({
   const environmentHasAnyThreads = environmentThreadRefs.length > 0 || environmentHasDraftThreads;
 
   useEffect(() => {
-    if (!inferredThreadRef || draftSession?.promotedTo) {
+    if (
+      !inferredThreadRef ||
+      draftSession?.promotedTo ||
+      draftSession?.submissionKind === "campaign"
+    ) {
       return;
     }
     markPromotedDraftThreadByRef(inferredThreadRef);
-  }, [draftSession?.promotedTo, inferredThreadRef]);
+  }, [draftSession?.promotedTo, draftSession?.submissionKind, inferredThreadRef]);
 
   useEffect(() => {
     if (!canonicalThreadRef || background) {

@@ -32,6 +32,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -2184,6 +2185,73 @@ it.effect.each([
         error.message,
         `Base ref "${testCase.baseRef}" does not resolve to a commit in project "Project" (/repo).`,
       );
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect(
+  "awaits workspace binding without starting a turn and reuses it on initialization retry",
+  () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const input = {
+        ...launchInput({
+          command: "await:launch",
+          thread: "await:thread",
+          workspace: { type: "worktree", baseRef: "main" },
+        }),
+        awaitPreparation: true,
+      };
+      const first = yield* launches.launch(input);
+      const projection = yield* threads.getThreadProjection(first.threadId);
+      assert.equal(projection.thread.worktreePath, "/repo-worktrees/feature");
+      assert.equal(projection.messages.length, 0);
+      yield* launches.launch(input);
+      assert.equal(harness.createWorktree.mock.calls.length, 1);
+      assert.equal((yield* threads.getThreadProjection(first.threadId)).runs.length, 0);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect("preserves a durably bound initializer workspace when setup is interrupted", () =>
+  Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>();
+    let attempts = 0;
+    const harness = makeHarness({
+      runSetup: () =>
+        Effect.suspend(() =>
+          ++attempts === 1
+            ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never))
+            : Effect.succeed({ status: "no-script" as const }),
+        ),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const input = {
+        ...launchInput({
+          command: "initializer:interrupted",
+          thread: "initializer:member",
+          workspace: { type: "worktree", baseRef: "main" },
+        }),
+        awaitPreparation: true,
+      };
+      const preparation = yield* launches.launch(input).pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      const before = yield* threads.getThreadProjection(input.threadId);
+      assert.equal(before.thread.worktreePath, "/repo-worktrees/feature");
+      yield* Fiber.interrupt(preparation);
+      assert.equal(harness.removeWorktree.mock.calls.length, 0);
+      const interrupted = yield* threads.getThreadProjection(input.threadId);
+      assert.equal(interrupted.thread.worktreePath, before.thread.worktreePath);
+      const recovered = yield* launches.launch(input);
+      assert.equal(recovered.threadId, input.threadId);
+      assert.equal(harness.createWorktree.mock.calls.length, 1);
+      const after = yield* threads.getThreadProjection(input.threadId);
+      assert.deepEqual(after.messages, before.messages);
+      assert.equal(after.runs.length, 0);
     }).pipe(Effect.provide(harness.layer));
   }),
 );

@@ -24,6 +24,12 @@ import {
   ChatGptHandoffState,
 } from "./providerSetup.ts";
 import * as Schema from "effect/Schema";
+import {
+  CampaignCreateInput,
+  CampaignSummary,
+  CampaignReadInput,
+  CampaignUiError,
+} from "./campaign.ts";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
@@ -382,6 +388,9 @@ import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
+  campaignsCreate: "campaigns.create",
+  campaignsSubscribe: "campaigns.subscribe",
+  campaignsRetry: "campaigns.retry",
   projectsList: "projects.list",
   projectsAdd: "projects.add",
   projectsRemove: "projects.remove",
@@ -1818,6 +1827,22 @@ const WsScheduledTasksListRpc = Rpc.make(WS_METHODS.scheduledTasksList, {
   success: ScheduledTaskListResult,
   error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
 });
+const WsCampaignCreateRpc = Rpc.make(WS_METHODS.campaignsCreate, {
+  payload: CampaignCreateInput,
+  success: CampaignSummary,
+  error: Schema.Union([CampaignUiError, EnvironmentAuthorizationError]),
+});
+const WsCampaignSubscribeRpc = Rpc.make(WS_METHODS.campaignsSubscribe, {
+  payload: Schema.Struct({}),
+  success: Schema.Array(CampaignSummary),
+  error: Schema.Union([CampaignUiError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+const WsCampaignRetryRpc = Rpc.make(WS_METHODS.campaignsRetry, {
+  payload: CampaignReadInput,
+  success: Schema.Void,
+  error: Schema.Union([CampaignUiError, EnvironmentAuthorizationError]),
+});
 
 const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTaskListInput,
@@ -1968,6 +1993,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRefreshUsageRatesRpc,
   WsServerSignalProcessRpc,
   WsScheduledTasksListRpc,
+  WsCampaignCreateRpc,
+  WsCampaignSubscribeRpc,
+  WsCampaignRetryRpc,
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksUpsertRpc,
   WsScheduledTasksSetEnabledRpc,

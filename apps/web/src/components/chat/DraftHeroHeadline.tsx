@@ -177,14 +177,17 @@ export function DraftHeroHeadline({
     }
     pendingScratchRef.current = null;
     const currentDraft = getComposerDraft(draftId);
+    const submissionKind =
+      useComposerDraftStore.getState().getDraftSession(draftId)?.submissionKind ?? "thread";
     if (!composerDraftHasUserContent(currentDraft)) {
-      void openProjectDraft(scopeProjectRef(project.environmentId, project.id));
+      void openProjectDraft(scopeProjectRef(project.environmentId, project.id), { submissionKind });
       return;
     }
     setLogicalProjectDraftThreadId(
-      logicalProjectKey,
+      submissionKind === "campaign" ? `campaign:${logicalProjectKey}` : logicalProjectKey,
       scopeProjectRef(project.environmentId, project.id),
       draftId,
+      { submissionKind },
     );
     if (!hasExplicitComposerModelSelection(currentDraft)) {
       applyStickyState(draftId);

@@ -136,7 +136,13 @@ export const CodexDriver: ProviderDriver<
     const currentCatalog = modelCatalog.current(DRIVER_KIND);
     const processEnv = yield* mergeProviderInstanceEnvironment(environment);
     const homeLayout = yield* resolveCodexHomeLayout(config);
-    const continuationIdentity = codexContinuationIdentity(homeLayout);
+    const baseIdentity = codexContinuationIdentity(homeLayout);
+    const continuationIdentity = config.executionProfile
+      ? {
+          ...baseIdentity,
+          continuationKey: `${baseIdentity.continuationKey}:${config.executionProfile}`,
+        }
+      : baseIdentity;
     const stampIdentity = withInstanceIdentity({
       instanceId,
       driverKind: DRIVER_KIND,

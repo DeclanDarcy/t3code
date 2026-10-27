@@ -1,9 +1,10 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { useParams } from "@tanstack/react-router";
+import { useCampaignPaneStore } from "../campaignPaneStore";
 
 import {
-  resolveThreadRouteRef,
   resolveThreadRouteTarget,
+  resolveCampaignPaneTarget,
   type ThreadRouteTarget,
 } from "../threadRoutes";
 
@@ -13,12 +14,18 @@ function useThreadRouteIds() {
   return { environmentId, threadId };
 }
 
-export function useThreadRouteTarget(): ThreadRouteTarget | null {
+export function useThreadRouteTarget(includeCampaign = true): ThreadRouteTarget | null {
   const { environmentId, threadId } = useThreadRouteIds();
   const draftId = useParams({ strict: false, select: (params) => params.draftId });
-  return resolveThreadRouteTarget({ environmentId, threadId, draftId });
+  const campaignId = useParams({ strict: false, select: (params) => params.campaignId });
+  const focused = useCampaignPaneStore((s) => s.target);
+  return (
+    resolveThreadRouteTarget({ environmentId, threadId, draftId }) ??
+    (includeCampaign ? resolveCampaignPaneTarget({ environmentId, campaignId }, focused) : null)
+  );
 }
 
 export function useThreadRouteRef(): ScopedThreadRef | null {
-  return resolveThreadRouteRef(useThreadRouteIds());
+  const target = useThreadRouteTarget();
+  return target?.kind === "server" ? target.threadRef : null;
 }
