@@ -45,6 +45,7 @@ import { useThreadRouteTarget } from "./useThreadRouteTarget";
 import { readUnloadedThreadCount } from "../state/olderSettledShelf";
 
 interface NewThreadWorkspaceOptions {
+  submissionKind?: "thread" | "campaign";
   branch?: string | null;
   worktreePath?: string | null;
   envMode?: DraftThreadEnvMode;
@@ -53,6 +54,7 @@ interface NewThreadWorkspaceOptions {
 
 function pickExplicitWorkspaceOptions(options: NewThreadWorkspaceOptions | undefined) {
   return {
+    submissionKind: options?.submissionKind ?? "thread",
     ...(options?.branch !== undefined ? { branch: options.branch } : {}),
     ...(options?.worktreePath !== undefined ? { worktreePath: options.worktreePath } : {}),
     ...(options?.envMode !== undefined ? { envMode: options.envMode } : {}),
@@ -71,6 +73,7 @@ export function useNewThreadHandler() {
   return (
     projectRef: ScopedProjectRef,
     options?: {
+      submissionKind?: "thread" | "campaign";
       branch?: string | null;
       worktreePath?: string | null;
       envMode?: DraftThreadEnvMode;
@@ -172,9 +175,13 @@ export function useNewThreadHandler() {
           ) > 0,
       });
     };
-    const logicalProjectKey = project
+    const baseLogicalProjectKey = project
       ? deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings)
       : scopedProjectKey(projectRef);
+    const logicalProjectKey =
+      options?.submissionKind === "campaign"
+        ? `campaign:${baseLogicalProjectKey}`
+        : baseLogicalProjectKey;
     const hasBranchOption = options?.branch !== undefined;
     const hasWorktreePathOption = options?.worktreePath !== undefined;
     const hasEnvModeOption = options?.envMode !== undefined;
@@ -354,6 +361,7 @@ export function useNewThreadHandler() {
         return { draftId: racedDraft.draftId, threadId: racedDraft.threadId };
       }
       setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, draftId, {
+        submissionKind: options?.submissionKind ?? "thread",
         threadId,
         createdAt,
         branch: options?.branch ?? null,

@@ -1,4 +1,6 @@
 import * as DocumentText from "../../provider/DocumentText.ts";
+import * as Cognitive from "../../provider/CodexCognitiveProfile.ts";
+import { readCognitiveAttachmentEvidence } from "../../provider/CognitiveAttachmentEvidence.ts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
@@ -152,6 +154,9 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const CODEX_PROVIDER = ProviderDriverKind.make("codex");
+const encodeCognitiveAttachmentEvidence = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.Unknown),
+);
 export const CODEX_DRIVER_KIND = CODEX_PROVIDER;
 export const CODEX_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(CODEX_DRIVER_KIND);
 
@@ -737,6 +742,8 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     /** ChatGPT token sharing does not accept service tiers. */
     readonly omitServiceTier?: boolean;
     readonly appContext?: ProviderAdapter.ProviderAdapterV2TurnInput["appContext"];
+    readonly cognitive?: boolean;
+    readonly outputSchema?: Readonly<Record<string, Schema.Json>>;
   }) {
     const runtimeModeDefaults = codexRuntimeModeTurnDefaults(input.runtimePolicy.runtimeMode);
     const approvalPolicy =
@@ -764,7 +771,7 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
       ]),
     );
     const t3Context =
-      input.hasT3Mcp === true
+      !input.cognitive && input.hasT3Mcp === true
         ? buildCodexAdditionalContext(
             { model: input.modelSelection.model, reasoningEffort: effort ?? undefined },
             {
@@ -791,14 +798,19 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
       ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
       ...(effort === undefined ? {} : { effort }),
       ...(serviceTier === undefined ? {} : { serviceTier }),
+      ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
       // Codex supplies its own mode instructions; send both modes to clear Plan on exit.
-      collaborationMode: {
-        mode: input.runtimePolicy.interactionMode,
-        settings: {
-          model: input.modelSelection.model,
-          ...(effort === undefined ? {} : { reasoning_effort: effort }),
-        },
-      },
+      ...(!input.cognitive
+        ? {
+            collaborationMode: {
+              mode: input.runtimePolicy.interactionMode,
+              settings: {
+                model: input.modelSelection.model,
+                ...(effort === undefined ? {} : { reasoning_effort: effort }),
+              },
+            },
+          }
+        : {}),
     });
   },
 );
@@ -1597,28 +1609,64 @@ export interface CodexAdapterV2Options {
   };
 }
 
+const decodeCognitiveNativeConfig = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    config: Schema.Struct({
+      mcp_servers: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+    }),
+  }),
+);
+
 export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
   adapterOptions: CodexAdapterV2Options,
 ) {
+  const cognitiveEnabled = adapterOptions.settings.executionProfile === "cognitive-v1";
+  const capabilities = cognitiveEnabled
+    ? {
+        ...CodexProviderCapabilitiesV2,
+        sessions: { ...CodexProviderCapabilitiesV2.sessions, supportsModelSwitchInSession: false },
+        tools: {
+          ...CodexProviderCapabilitiesV2.tools,
+          supportsMcpTools: false,
+          supportsDynamicToolCallbacks: false,
+        },
+        subagents: { ...CodexProviderCapabilitiesV2.subagents, supportsSubagents: false },
+      }
+    : CodexProviderCapabilitiesV2;
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const readMcpSession = (threadId: ThreadId | null) =>
     // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
     threadId === null ? Effect.succeed(undefined) : mcpSessions.read(threadId);
   const { clientFactory, crypto, fileSystem, idAllocator, serverConfig } = adapterOptions;
+  const pathService = yield* Path.Path;
   const continuationRequests = adapterOptions.continuationRequests;
 
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CODEX_PROVIDER,
+    ...(cognitiveEnabled ? { mcpSessionPolicy: "disabled" as const } : {}),
     getCapabilities: Effect.fn("CodexAdapterV2.getCapabilities")(function () {
-      return Effect.succeed(CodexProviderCapabilitiesV2);
+      return Effect.succeed(capabilities);
     }),
-    planSelectionTransition: Effect.fn("CodexAdapterV2.planSelectionTransition")(function () {
+    planSelectionTransition: Effect.fn("CodexAdapterV2.planSelectionTransition")(function (input) {
+      if (cognitiveEnabled && input.target.model !== "gpt-6.1-sol")
+        return Effect.succeed({
+          type: "reject" as const,
+          reason: "Cognitive Codex requires gpt-6.1-sol.",
+        });
       return Effect.succeed(turnScopedSelectionTransition());
     }),
     openSession: Effect.fn("CodexAdapterV2.openSession")(
       function* (input) {
         const scope = yield* Scope.Scope;
+        const cognitive = cognitiveEnabled
+          ? yield* Cognitive.prepareCognitiveProfile(adapterOptions.serverConfig.stateDir).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, pathService),
+              Effect.provideService(Crypto.Crypto, crypto),
+            )
+          : undefined;
+        if (cognitive) yield* Cognitive.validateCognitiveSelection(input.modelSelection);
         const resolvedRuntime =
           adapterOptions.resolveRuntime === undefined
             ? undefined
@@ -1632,13 +1680,22 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                 ),
               );
+        const effectiveSettings = resolvedRuntime?.config ?? adapterOptions.settings;
+        const effectiveEnvironment = resolvedRuntime?.environment ?? adapterOptions.environment;
+        const environment = { ...effectiveEnvironment };
+        if (cognitive) delete environment.T3CODE_CODEX_LAUNCH_ARGS;
         const client = yield* clientFactory.open({
           instanceId: adapterOptions.instanceId,
           threadId: input.threadId,
           providerSessionId: input.providerSessionId,
           runtimePolicy: input.runtimePolicy,
-          settings: resolvedRuntime?.config ?? adapterOptions.settings,
-          environment: resolvedRuntime?.environment ?? adapterOptions.environment,
+          settings: cognitive
+            ? {
+                ...effectiveSettings,
+                launchArgs: `${resolveCodexLaunchArgs(effectiveSettings.launchArgs, effectiveEnvironment)} ${cognitive.launchArgs}`,
+              }
+            : effectiveSettings,
+          environment,
         });
         const additionalContextByThread = yield* Ref.make(
           new Map<
@@ -1697,6 +1754,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 capabilities: CODEX_CLIENT_CAPABILITIES,
               })
               .pipe(
+                Effect.tap((response) =>
+                  cognitive ? Cognitive.validateCognitiveVersion(response.userAgent) : Effect.void,
+                ),
                 Effect.catchTags({
                   // Interruption can leave Codex initialized before the local flag is set.
                   CodexAppServerRequestError: (error) =>
@@ -1709,14 +1769,60 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             yield* Ref.set(initialized, true);
           }),
         );
-        const now = yield* DateTime.now;
-        const session = providerSession({
-          providerSessionId: input.providerSessionId,
-          providerInstanceId: adapterOptions.instanceId,
-          cwd: input.runtimePolicy.cwd,
-          model: input.modelSelection.model,
-          now,
+        const readThreadParams = Effect.fn("CodexAdapterV2.readThreadParams")(function* (
+          modelSelection: ModelSelection | undefined,
+          runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy | undefined,
+          mcpSession: McpProviderSession.McpProviderSessionConfig | undefined,
+        ) {
+          if (!cognitive)
+            return codexThreadRuntimeParams({
+              ...(modelSelection ? { modelSelection } : {}),
+              ...(runtimePolicy ? { runtimePolicy } : {}),
+              mcpSession,
+            });
+          yield* cognitive.validate();
+          if (modelSelection) yield* Cognitive.validateCognitiveSelection(modelSelection);
+          const raw = yield* client.raw.request("config/read", {
+            includeLayers: false,
+            cwd: runtimePolicy?.cwd,
+          });
+          const decoded = yield* decodeCognitiveNativeConfig(raw);
+          return {
+            ...(runtimePolicy?.cwd == null ? {} : { cwd: runtimePolicy.cwd }),
+            model: "gpt-6.1-sol",
+            developerInstructions: cognitive.developerInstructions,
+            config: {
+              ...cognitive.config,
+              ...Object.fromEntries(
+                Object.keys(decoded.config.mcp_servers ?? {}).map((name) => [
+                  `mcp_servers.${name}.enabled`,
+                  false,
+                ]),
+              ),
+            },
+          };
         });
+        const assertNoCognitiveMcp = Effect.fn("CodexAdapterV2.assertNoCognitiveMcp")(function* (
+          threadId: string,
+        ) {
+          if (!cognitive) return;
+          const status = yield* client.request("mcpServerStatus/list", { threadId, limit: 100 });
+          if (status.data.length || status.nextCursor)
+            return yield* new Cognitive.CodexCognitiveProfileError({
+              reason: "an MCP server was enabled",
+            });
+        });
+        const now = yield* DateTime.now;
+        const session = {
+          ...providerSession({
+            providerSessionId: input.providerSessionId,
+            providerInstanceId: adapterOptions.instanceId,
+            cwd: input.runtimePolicy.cwd,
+            model: input.modelSelection.model,
+            now,
+          }),
+          capabilities,
+        };
         const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const rateLimitSnapshot = yield* Ref.make<CodexRateLimitSnapshot | undefined>(undefined);
         const limitedTurnItems = yield* Ref.make(
@@ -3090,16 +3196,47 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           >,
         ) {
           const inputItems: Array<CodexSchema.V2TurnStartParams__UserInput> = [];
-          const text = yield* providerMessageTextWithAttachmentPaths({
-            text: codexSkillMentionText(turnInput.message.text),
-            attachments: turnInput.message.attachments,
-            resolveExtractedTextPath: (path) =>
-              DocumentText.resolveExtractedTextPath(path).pipe(
+          const attachmentEvidence = cognitiveEnabled
+            ? yield* readCognitiveAttachmentEvidence({
+                attachments: turnInput.message.attachments,
+                attachmentsDir: serverConfig.attachmentsDir,
+                resolveTextPath: (path) =>
+                  DocumentText.resolveExtractedTextPath(path).pipe(
+                    Effect.provideService(FileSystem.FileSystem, fileSystem),
+                  ),
+              }).pipe(
                 Effect.provideService(FileSystem.FileSystem, fileSystem),
-              ),
-            resolveAttachmentPath: (attachment) =>
-              resolveAttachmentPath({ attachmentsDir: serverConfig.attachmentsDir, attachment }),
-          });
+                Effect.provideService(Crypto.Crypto, crypto),
+                Effect.mapError((cause) =>
+                  toProtocolError(
+                    cause instanceof Error ? cause.message : "Cognitive attachment input failed.",
+                  ),
+                ),
+              )
+            : [];
+          const encodedEvidence = attachmentEvidence.length
+            ? yield* encodeCognitiveAttachmentEvidence(attachmentEvidence).pipe(
+                Effect.mapError((cause) => toProtocolError(String(cause))),
+              )
+            : "";
+          const text = cognitiveEnabled
+            ? turnInput.message.text +
+              (attachmentEvidence.length
+                ? "\n\nAttachment text supplied by T3:\n" + encodedEvidence
+                : "")
+            : yield* providerMessageTextWithAttachmentPaths({
+                text: codexSkillMentionText(turnInput.message.text),
+                attachments: turnInput.message.attachments,
+                resolveExtractedTextPath: (path) =>
+                  DocumentText.resolveExtractedTextPath(path).pipe(
+                    Effect.provideService(FileSystem.FileSystem, fileSystem),
+                  ),
+                resolveAttachmentPath: (attachment) =>
+                  resolveAttachmentPath({
+                    attachmentsDir: serverConfig.attachmentsDir,
+                    attachment,
+                  }),
+              });
           if (text.length > 0) {
             inputItems.push({
               type: "text",
@@ -6294,12 +6431,26 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             codexInput: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>,
           ) {
             const threadId = yield* getNativeThreadId(turnInput.providerThread);
-            const mcpSession = yield* mcpSessions.read(turnInput.threadId);
+            yield* Cognitive.validateCognitiveBinding(cognitiveEnabled, turnInput.providerThread);
+            if (cognitive) {
+              yield* cognitive.validate();
+              yield* Cognitive.validateCognitiveSelection(turnInput.modelSelection);
+              yield* assertNoCognitiveMcp(threadId);
+            } else if (turnInput.message.codexOutputSchema) {
+              return yield* new Cognitive.CodexCognitiveProfileError({
+                reason: "output schemas require a cognitive thread",
+              });
+            }
+            const mcpSession = cognitive ? undefined : yield* mcpSessions.read(turnInput.threadId);
             const turnStartParams = yield* buildCodexTurnStartParams({
               nativeThreadId: threadId,
               codexInput,
               runtimePolicy: turnInput.runtimePolicy,
               modelSelection: turnInput.modelSelection,
+              cognitive: cognitiveEnabled,
+              ...(turnInput.message.codexOutputSchema
+                ? { outputSchema: turnInput.message.codexOutputSchema }
+                : {}),
               hasT3Mcp: mcpSession !== undefined,
               browserToolsAvailable: mcpSession?.browserToolsAvailable ?? true,
               deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
@@ -6533,6 +6684,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           driver: CODEX_PROVIDER,
           providerSessionId: input.providerSessionId,
           providerSession: session,
+          ...(cognitiveEnabled ? { mcpSessionPolicy: "disabled" as const } : {}),
           events: Stream.fromEffectRepeat(Queue.take(events)),
           canReuseContextUsage: canReuseCodexContextUsage,
           // Idle release can beat delayed subagent resumes: Codex reports them completed between turns with no resume-expected signal.
@@ -6583,17 +6735,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ensureInitialized.pipe(
               Effect.andThen(mcpSessions.read(threadInput.threadId)),
               Effect.flatMap((mcpSession) =>
-                client.request(
-                  "thread/start",
-                  codexThreadRuntimeParams({
-                    mcpSession,
-                    modelSelection: threadInput.modelSelection,
-                    runtimePolicy: threadInput.runtimePolicy,
-                  }),
-                ),
+                readThreadParams(
+                  threadInput.modelSelection,
+                  threadInput.runtimePolicy,
+                  cognitive ? undefined : mcpSession,
+                ).pipe(Effect.flatMap((params) => client.request("thread/start", params))),
               ),
-              Effect.map((response): OrchestrationV2ProviderThread =>
-                providerThreadFromCodexThread({
+              Effect.tap((response) => assertNoCognitiveMcp(response.thread.id)),
+              Effect.map((response): OrchestrationV2ProviderThread => ({
+                ...providerThreadFromCodexThread({
                   appThreadId: threadInput.threadId,
                   idAllocator,
                   ownerNodeId: null,
@@ -6601,7 +6751,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   providerInstanceId: adapterOptions.instanceId,
                   thread: response.thread,
                 }),
-              ),
+                ...(cognitive ? { nativeMetadata: { codexCognitiveProfile: cognitive.id } } : {}),
+              })),
               Effect.mapError(
                 (cause) =>
                   new ProviderAdapter.ProviderAdapterEnsureThreadError({
@@ -6613,22 +6764,25 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ),
           resumeThread: Effect.fn("CodexAdapterV2.resumeThread")(
             function* (threadInput) {
+              yield* Cognitive.validateCognitiveBinding(
+                cognitiveEnabled,
+                threadInput.providerThread,
+              );
+              yield* ensureInitialized;
               const nativeThreadId = yield* getNativeThreadId(threadInput.providerThread);
               // excludeTurns is not in the generated request schema yet.
               const resume = client.raw.request("thread/resume", {
                 threadId: nativeThreadId,
                 excludeTurns: true,
-                ...codexThreadRuntimeParams({
-                  mcpSession: yield* readMcpSession(
-                    threadInput.threadId ?? threadInput.providerThread.appThreadId,
-                  ),
-                  ...(threadInput.modelSelection === undefined
-                    ? {}
-                    : { modelSelection: threadInput.modelSelection }),
-                  ...(threadInput.runtimePolicy === undefined
-                    ? {}
-                    : { runtimePolicy: threadInput.runtimePolicy }),
-                }),
+                ...(yield* readThreadParams(
+                  threadInput.modelSelection,
+                  threadInput.runtimePolicy,
+                  cognitive
+                    ? undefined
+                    : yield* readMcpSession(
+                        threadInput.threadId ?? threadInput.providerThread.appThreadId,
+                      ),
+                )),
               });
               const response = yield* ensureInitialized.pipe(
                 Effect.andThen(
@@ -6651,6 +6805,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ),
                 Effect.flatMap(decodeCodexResumeMetadata),
               );
+              yield* assertNoCognitiveMcp(nativeThreadId);
               return {
                 ...threadInput.providerThread,
                 providerSessionId: input.providerSessionId,
@@ -6680,7 +6835,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ),
           compactThread: Effect.fn("CodexAdapterV2.compactThread")(
             function* (turnInput) {
+              yield* Cognitive.validateCognitiveBinding(cognitiveEnabled, turnInput.providerThread);
+              if (cognitive) yield* cognitive.validate();
               const threadId = yield* getNativeThreadId(turnInput.providerThread);
+              yield* assertNoCognitiveMcp(threadId);
               yield* Ref.update(pendingRootTurns, (current) =>
                 new Map(current).set(threadId, turnInput),
               );
@@ -6740,7 +6898,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               turnInput.restartContinuationOfRunId === undefined
                 ? parseGoalCommand(turnInput.message)
                 : null;
-            if (goalCommand !== null) return runGoalCommand(turnInput, goalCommand);
+            if (goalCommand !== null)
+              return cognitive
+                ? Effect.fail(
+                    new ProviderAdapter.ProviderAdapterTurnStartError({
+                      driver: CODEX_PROVIDER,
+                      threadId: turnInput.threadId,
+                      providerThreadId: turnInput.providerThread.id,
+                      runId: turnInput.runId,
+                      cause: new Cognitive.CodexCognitiveProfileError({
+                        reason: "native goals are disabled",
+                      }),
+                    }),
+                  )
+                : runGoalCommand(turnInput, goalCommand);
             return Effect.gen(function* () {
               yield* startNativeTurn(
                 turnInput,
@@ -6763,6 +6934,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           },
           steerTurn: Effect.fn("CodexAdapterV2.steerTurn")(
             function* (turnInput) {
+              yield* Cognitive.validateCognitiveBinding(cognitiveEnabled, turnInput.providerThread);
+              if (cognitive) yield* cognitive.validate();
+              if (turnInput.message.codexOutputSchema)
+                return yield* new Cognitive.CodexCognitiveProfileError({
+                  reason: "structured output requires a new turn, not steering",
+                });
               const threadId = yield* getNativeThreadId(turnInput.providerThread);
               const latestTurnId = latestGoalTurnId(turnInput.providerTurnId);
               const held = heldGoalTurn(turnInput.providerThread, latestTurnId);
@@ -7318,6 +7495,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ),
           rollbackThread: Effect.fn("CodexAdapterV2.rollbackThread")(
             function* (threadInput) {
+              yield* Cognitive.validateCognitiveBinding(
+                cognitiveEnabled,
+                threadInput.providerThread,
+              );
               const threadId = yield* getNativeThreadId(threadInput.providerThread);
               const numTurns = yield* resolveCodexRollbackTurnCount(threadInput);
               const nativeConversationHeadRef =
@@ -7351,11 +7532,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 yield* client.raw.request("thread/resume", {
                   threadId,
                   excludeTurns: true,
-                  ...codexThreadRuntimeParams({
-                    mcpSession: yield* readMcpSession(threadInput.providerThread.appThreadId),
-                    modelSelection: input.modelSelection,
-                    runtimePolicy: input.runtimePolicy,
-                  }),
+                  ...(yield* readThreadParams(
+                    input.modelSelection,
+                    input.runtimePolicy,
+                    cognitive
+                      ? undefined
+                      : yield* readMcpSession(threadInput.providerThread.appThreadId),
+                  )),
                 });
               }
               const response = yield* ensureInitialized.pipe(
@@ -7394,7 +7577,17 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ),
           forkThread: Effect.fn("CodexAdapterV2.forkThread")(
             function* (threadInput) {
+              yield* Cognitive.validateCognitiveBinding(
+                cognitiveEnabled,
+                threadInput.sourceProviderThread,
+              );
+              yield* ensureInitialized;
               const threadId = yield* getNativeThreadId(threadInput.sourceProviderThread);
+              const params = yield* readThreadParams(
+                threadInput.modelSelection,
+                threadInput.runtimePolicy,
+                cognitive ? undefined : yield* mcpSessions.read(threadInput.targetThreadId),
+              );
               const boundary = yield* resolveCodexForkBoundary(threadInput);
               const response = yield* ensureInitialized.pipe(
                 Effect.andThen(
@@ -7403,15 +7596,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     ...(boundary.lastTurnId === undefined
                       ? {}
                       : { lastTurnId: boundary.lastTurnId }),
-                    ...codexThreadRuntimeParams({
-                      mcpSession: yield* mcpSessions.read(threadInput.targetThreadId),
-                      ...(threadInput.modelSelection === undefined
-                        ? {}
-                        : { modelSelection: threadInput.modelSelection }),
-                      ...(threadInput.runtimePolicy === undefined
-                        ? {}
-                        : { runtimePolicy: threadInput.runtimePolicy }),
-                    }),
+                    ...params,
                   }),
                 ),
                 Effect.mapError(
@@ -7449,20 +7634,23 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ),
                 )).thread;
               }
-              return providerThreadFromCodexThread({
-                appThreadId: threadInput.targetThreadId,
-                idAllocator,
-                ownerNodeId: threadInput.ownerNodeId ?? null,
-                providerSessionId: input.providerSessionId,
-                providerInstanceId: adapterOptions.instanceId,
-                thread: forkedThread,
-                forkedFrom: {
-                  providerThreadId: threadInput.sourceProviderThread.id,
-                  ...(threadInput.providerTurnId === undefined
-                    ? {}
-                    : { providerTurnId: threadInput.providerTurnId }),
-                },
-              });
+              return {
+                ...providerThreadFromCodexThread({
+                  appThreadId: threadInput.targetThreadId,
+                  idAllocator,
+                  ownerNodeId: threadInput.ownerNodeId ?? null,
+                  providerSessionId: input.providerSessionId,
+                  providerInstanceId: adapterOptions.instanceId,
+                  thread: forkedThread,
+                  forkedFrom: {
+                    providerThreadId: threadInput.sourceProviderThread.id,
+                    ...(threadInput.providerTurnId === undefined
+                      ? {}
+                      : { providerTurnId: threadInput.providerTurnId }),
+                  },
+                }),
+                ...(cognitive ? { nativeMetadata: { codexCognitiveProfile: cognitive.id } } : {}),
+              };
             },
             (effect, threadInput) =>
               effect.pipe(

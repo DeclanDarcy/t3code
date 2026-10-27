@@ -579,6 +579,9 @@ export function makeProviderSettingsSchema<const Fields extends Schema.Struct.Fi
 
 export const CodexSettings = makeProviderSettingsSchema(
   {
+    executionProfile: Schema.optionalKey(Schema.Literal("cognitive-v1")).pipe(
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
     setupMode: Schema.optionalKey(Schema.Literals(["managed", "existing"])).pipe(
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),

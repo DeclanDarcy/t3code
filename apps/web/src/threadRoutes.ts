@@ -15,6 +15,17 @@ export type ThreadRouteTarget =
       draftId: DraftId;
     };
 
+export function resolveCampaignPaneTarget(
+  params: { environmentId?: string | undefined; campaignId?: string | undefined },
+  focused: { campaignId: string; threadRef: ScopedThreadRef } | null,
+): ThreadRouteTarget | null {
+  return focused !== null &&
+    focused.campaignId === params.campaignId &&
+    focused.threadRef.environmentId === params.environmentId
+    ? { kind: "server", threadRef: focused.threadRef }
+    : null;
+}
+
 type DraftThreadRouteState = {
   environmentId: EnvironmentId;
   threadId: ThreadId;

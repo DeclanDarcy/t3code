@@ -10,6 +10,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Result from "effect/Result";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
@@ -294,5 +295,38 @@ it.effect("distinguishes compatible and incompatible instances of the same drive
         codex_incompatible: { continuationKey: "codex:account:other" },
       }),
     ),
+  ),
+);
+
+it.effect("rejects model and provider changes on bound cognitive conversations", () =>
+  Effect.gen(function* () {
+    const service = yield* ProviderSwitch.ProviderSwitchServiceV2;
+    const initial = projection();
+    const thread = {
+      ...initial,
+      thread: {
+        ...initial.thread,
+        modelSelection: { instanceId: currentInstanceId, model: "gpt-6.1-sol" },
+      },
+      providerThreads: [
+        { nativeMetadata: { codexCognitiveProfile: "cognitive-v1:pinned" } },
+      ] as unknown as OrchestrationV2ThreadProjection["providerThreads"],
+    };
+    for (const targetModelSelection of [
+      { instanceId: currentInstanceId, model: "gpt-6-astra" },
+      { instanceId: ProviderInstanceId.make("ordinary"), model: "gpt-6.1-sol" },
+    ]) {
+      const result = yield* Effect.result(
+        service.plan({ projection: thread, targetModelSelection }),
+      );
+      assert.isTrue(Result.isFailure(result));
+    }
+    const retained = yield* service.plan({
+      projection: thread,
+      targetModelSelection: thread.thread.modelSelection,
+    });
+    assert.notEqual(retained.transition.type, "reject");
+  }).pipe(
+    Effect.provide(layerTest({ [currentInstanceId]: { continuationKey: "codex:cognitive-v1" } })),
   ),
 );

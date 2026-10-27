@@ -56,6 +56,7 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 
 export const ProviderAdapterV2TurnMessage = Schema.Struct({
+  codexOutputSchema: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
   messageId: MessageId,
   text: Schema.String,
   attachments: Schema.Array(ChatAttachment),
@@ -541,6 +542,7 @@ export type ProviderAdapterV2SubagentOutcome = {
 };
 
 export interface ProviderAdapterV2SessionRuntime {
+  readonly mcpSessionPolicy?: "disabled";
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly providerSessionId: ProviderSessionId;
@@ -634,6 +636,8 @@ export class ProviderAdapterV2 extends Context.Service<
   {
     readonly instanceId: ProviderInstanceId;
     readonly driver: ProviderDriverKind;
+    /** Explicit startup opt-out; MCP capability may be negotiated only after credentials are prepared. */
+    readonly mcpSessionPolicy?: "disabled";
     readonly getCapabilities: () => Effect.Effect<
       OrchestrationV2ProviderCapabilities,
       ProviderAdapterV2Error

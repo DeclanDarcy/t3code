@@ -220,8 +220,9 @@ export function useDraftEnvironmentRouting(input: DraftEnvironmentRoutingInput) 
         return;
       const projectRef = scopeProjectRef(target.environmentId, project.id);
       if (activeProjectIsScratch) {
+        const logicalKey = deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings);
         setLogicalProjectDraftThreadId(
-          deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings),
+          currentDraft.submissionKind === "campaign" ? `campaign:${logicalKey}` : logicalKey,
           projectRef,
           draftId,
           { environmentSelection: "manual", loadBalancedEnvironmentId: null },

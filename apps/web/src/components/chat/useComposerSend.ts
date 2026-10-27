@@ -108,6 +108,7 @@ import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { fileAttachmentCapabilityBlockReason } from "./composerAttachmentFiles";
 import { readEnvironmentScope } from "../../state/session";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
+import { createCampaign } from "../../state/campaigns";
 import {
   ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
   threadContextsOutsideEnvironment,
@@ -322,6 +323,7 @@ export function useComposerSend(input: ComposerSendInput) {
   } = input;
   const handleNewThread = useNewThreadHandler();
   const navigate = useNavigate();
+  const submitCampaign = useOrchestrationCommand(createCampaign, { reportFailure: false });
   const clientSettingsHydrated = useClientSettingsHydrated();
   const planModeEnabled = useEnvironmentSettings(environmentId, selectPlanModeEnabled);
   const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
@@ -898,6 +900,69 @@ export function useComposerSend(input: ComposerSendInput) {
         setThreadError(threadIdForSend, "Retry or remove failed uploads before sending.");
         return;
       }
+    }
+
+    if (isLocalDraftThread && draftThread?.submissionKind === "campaign") {
+      try {
+        if (multipleModelSelections !== null)
+          throw new Error("Choose one ordinary Codex implementation model for a campaign.");
+        if (!turnUsesAttachmentUploads && composerAttachmentsSnapshot.length > 0)
+          throw new Error(
+            "Campaign attachments require this environment's attachment upload support.",
+          );
+        const attachments =
+          getUploadedAttachments({ environmentId, images: composerAttachmentsSnapshot }) ?? [];
+        const result = await submitCampaign({
+          environmentId,
+          input: {
+            campaignId: `campaign:${threadIdForSend}`,
+            cognitiveThreadId: threadIdForSend,
+            projectId: activeProject.id,
+            text: promptForSend,
+            attachments,
+            ...(buildOutgoingMessageContext(attachments.map((a) => a.id))
+              ? { context: buildOutgoingMessageContext(attachments.map((a) => a.id)) }
+              : {}),
+            implementationModel: ctxSelectedModelSelection,
+            runtimeMode,
+            interactionMode: sendInteractionMode,
+            workspaceStrategy: baseBranchForWorktree
+              ? { type: "worktree", baseRef: baseBranchForWorktree, startFromOrigin }
+              : activeThread.worktreePath
+                ? {
+                    type: "existing_worktree",
+                    worktreePath: activeThread.worktreePath,
+                    ...(activeThreadBranch ? { branch: activeThreadBranch } : {}),
+                  }
+                : { type: "root" },
+          },
+        });
+        if (result._tag === "Failure") throw new Error(String(squashAtomCommandFailure(result)));
+        if (currentRouteThreadKeyRef.current === routeThreadKey) {
+          await navigate({
+            to: "/$environmentId/campaign/$campaignId",
+            params: { environmentId, campaignId: result.value.campaignId },
+          });
+        }
+        const live = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+        if (
+          live?.prompt === promptAtSend &&
+          [...live.images, ...live.files].map((a) => a.id).join() ===
+            composerAttachmentsSnapshot.map((a) => a.id).join()
+        ) {
+          useComposerDraftStore.getState().clearDraftThread(composerDraftTarget);
+        }
+      } catch (error) {
+        setThreadError(
+          threadIdForSend,
+          error instanceof Error
+            ? error.message
+            : "Campaign submission failed; the draft has been preserved.",
+        );
+      } finally {
+        sendInFlightRef.current = false;
+      }
+      return;
     }
 
     if (

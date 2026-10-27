@@ -338,6 +338,7 @@ import {
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useComposerHandleContext } from "../composerHandleContext";
+import { useConversationActive, useConversationAutofocus } from "./campaignConversation";
 import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/attachments";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { assetEnvironment } from "../state/assets";
@@ -402,6 +403,8 @@ const noopHeldRevert = (_targetTurnCount: number) => {};
 const noopHeldAttachment = (_attachment: ChatFileAttachment) => {};
 
 export default function ChatView(props: ChatViewProps) {
+  const activePane = useConversationActive();
+  const autoFocusConversation = useConversationAutofocus();
   const {
     environmentId,
     threadId,
@@ -1570,7 +1573,7 @@ export default function ChatView(props: ChatViewProps) {
     remoteOpenMode: remoteOpenState.mode,
   });
   useOpenFavoriteEditorShortcut({
-    enabled: showOpenInPicker && !backgroundThread,
+    enabled: activePane && showOpenInPicker && !backgroundThread,
     environmentId: activeThread?.environmentId ?? environmentId,
     keybindings,
     availableEditors,
@@ -1760,7 +1763,10 @@ export default function ChatView(props: ChatViewProps) {
     }
   };
   const onInterruptStable = useStableCallback(onInterrupt);
-  useEffect(() => subscribeSnapShotComposerFocus(focusComposerStable), [focusComposerStable]);
+  useEffect(
+    () => (activePane ? subscribeSnapShotComposerFocus(focusComposerStable) : undefined),
+    [activePane, focusComposerStable],
+  );
   const scheduleComposerFocus = () => {
     window.requestAnimationFrame(() => {
       focusComposer();
@@ -2027,17 +2033,31 @@ export default function ChatView(props: ChatViewProps) {
   });
 
   useEffect(() => {
-    if (!activeThread?.id || terminalUiState.terminalOpen) return;
+    if (!autoFocusConversation || !activePane || !activeThread?.id || terminalUiState.terminalOpen)
+      return;
     const frame = window.requestAnimationFrame(() => {
       focusComposerStable();
     });
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [activeThread?.id, focusComposerStable, terminalUiState.terminalOpen]);
+  }, [
+    autoFocusConversation,
+    activePane,
+    activeThread?.id,
+    focusComposerStable,
+    terminalUiState.terminalOpen,
+  ]);
 
   useEffect(() => {
-    if (!activeThread?.id || terminalUiState.terminalOpen || isMobileViewport) return;
+    if (
+      !autoFocusConversation ||
+      !activePane ||
+      !activeThread?.id ||
+      terminalUiState.terminalOpen ||
+      isMobileViewport
+    )
+      return;
     let frame: number | null = null;
     const onWindowFocus = () => {
       if (frame !== null) window.cancelAnimationFrame(frame);
@@ -2055,7 +2075,14 @@ export default function ChatView(props: ChatViewProps) {
       window.removeEventListener("focus", onWindowFocus);
       if (frame !== null) window.cancelAnimationFrame(frame);
     };
-  }, [activeThread?.id, focusComposerStable, isMobileViewport, terminalUiState.terminalOpen]);
+  }, [
+    autoFocusConversation,
+    activePane,
+    activeThread?.id,
+    focusComposerStable,
+    isMobileViewport,
+    terminalUiState.terminalOpen,
+  ]);
 
   useEffect(() => {
     if (!activeThread?.id) return;
@@ -2603,8 +2630,9 @@ export default function ChatView(props: ChatViewProps) {
   // it from a handler requests focus there. A closed drawer leaves focus to the
   // composer effect above.
   useEffect(() => {
-    if (activeThreadRef) return focusTerminalOnThreadEnter(activeThreadRef);
-  }, [activeThreadRef]);
+    if (autoFocusConversation && activePane && activeThreadRef)
+      return focusTerminalOnThreadEnter(activeThreadRef);
+  }, [autoFocusConversation, activePane, activeThreadRef]);
 
   const getShortcutContext = (eventTarget: EventTarget | null = document.activeElement) => ({
     terminalFocus: getTerminalFocusOwner() !== null,
@@ -2629,7 +2657,7 @@ export default function ChatView(props: ChatViewProps) {
   const isThreadFindActive = useThreadFindOpen(activeThreadRef, threadFindEnabled);
 
   useChatShortcuts({
-    enabled: activeThreadId !== null && !backgroundThread,
+    enabled: activePane && activeThreadId !== null && !backgroundThread,
     keybindings,
     scriptKeybindings,
     getShortcutContext,
@@ -2684,12 +2712,13 @@ export default function ChatView(props: ChatViewProps) {
   // A focused desktop browser page forwards these chords as menu actions.
   useEffect(() => {
     return window.desktopBridge?.onMenuAction((action) => {
+      if (!activePane) return;
       if (action === "rightPanel.toggle") toggleRightPanelStable();
       else if (action === "rightPanel.toggleMaximized") toggleRightPanelMaximizedStable();
     });
-  }, [toggleRightPanelStable, toggleRightPanelMaximizedStable]);
+  }, [activePane, toggleRightPanelStable, toggleRightPanelMaximizedStable]);
 
-  usePasteToFocusComposer(activeThreadId, composerRef);
+  usePasteToFocusComposer(activePane ? activeThreadId : null, composerRef);
   const {
     onConfirmRevertStable,
     onForkFromRunStable,
@@ -3410,6 +3439,11 @@ export default function ChatView(props: ChatViewProps) {
                             : undefined
                         }
                       >
+                        {draftThread?.submissionKind === "campaign" ? (
+                          <div className="mb-2 text-sm font-medium">
+                            New campaign · select the implementation model below
+                          </div>
+                        ) : null}
                         <DraftHeroHeadline
                           draftId={draftId}
                           activeProjectRef={activeProjectRef}

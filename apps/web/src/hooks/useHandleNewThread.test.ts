@@ -263,6 +263,21 @@ describe.each([
 });
 
 describe("useNewThreadHandler", () => {
+  it("keeps a campaign draft separate from ordinary project drafts", async () => {
+    testState.reset(null);
+    const pending = useNewThreadHandler()(
+      { environmentId: "environment-ssh", projectId: "project-remote" } as never,
+      { submissionKind: "campaign" },
+    );
+    testState.completeProjectFileRead(null);
+    await pending;
+    expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
+      expect.stringMatching(/^campaign:/),
+      expect.anything(),
+      "draft-delayed",
+      expect.objectContaining({ submissionKind: "campaign" }),
+    );
+  });
   it("opens the draft without waiting on a project file from an offline machine", async () => {
     testState.reset(null, { envMode: null, startFromOrigin: false });
     testState.disconnect("environment-ssh");

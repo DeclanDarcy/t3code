@@ -69,6 +69,18 @@ export const layer: Layer.Layer<
           const current = projection.thread.modelSelection;
           const instanceChanged = current.instanceId !== targetModelSelection.instanceId;
           const modelChanged = current.model !== targetModelSelection.model;
+          if (
+            projection.providerThreads.some(
+              (thread) => thread.nativeMetadata?.codexCognitiveProfile,
+            ) &&
+            (instanceChanged || targetModelSelection.model !== "gpt-6.1-sol")
+          ) {
+            return yield* new ProviderSwitchPlanError({
+              threadId: projection.thread.id,
+              targetProviderInstanceId: targetModelSelection.instanceId,
+              cause: "Cognitive threads cannot change provider or model; create a new thread.",
+            });
+          }
           const getMetadata = (instanceId: typeof current.instanceId) =>
             adapters.getMetadata !== undefined
               ? adapters.getMetadata(instanceId)

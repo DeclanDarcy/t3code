@@ -319,6 +319,7 @@ function unimplemented(detail: string) {
 const makeProviderAdapter = Effect.fnUntraced(function* (
   state: Ref.Ref<TestProviderRuntimeState>,
   options: {
+    readonly mcpSessionPolicy?: "disabled";
     readonly failEventStream?: boolean;
     readonly capabilities?: OrchestrationV2ProviderCapabilities;
     readonly mcpConfigs?: Ref.Ref<
@@ -354,6 +355,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
   );
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: ProviderInstanceId.make("codex"),
+    ...(options.mcpSessionPolicy ? { mcpSessionPolicy: options.mcpSessionPolicy } : {}),
     driver: CODEX_DRIVER,
     getCapabilities: () => Effect.succeed(options.capabilities ?? CodexCapabilities),
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
@@ -400,6 +402,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
           driver: CODEX_DRIVER,
           providerSessionId: input.providerSessionId,
           providerSession: session,
+          ...(options.mcpSessionPolicy ? { mcpSessionPolicy: options.mcpSessionPolicy } : {}),
           events: options.failEventStream
             ? Stream.fail(
                 new ProviderAdapter.ProviderAdapterEventStreamError({
@@ -455,6 +458,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
 });
 
 function layerTest(input: {
+  readonly mcpSessionPolicy?: "disabled";
   readonly state: Ref.Ref<TestProviderRuntimeState>;
   readonly idleTimeoutMs: number;
   readonly maxIdlePinMs?: number;
@@ -485,6 +489,7 @@ function layerTest(input: {
   readonly scopeCloseReached?: Deferred.Deferred<void>;
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
   readonly projectServiceLayer?: Layer.Layer<ProjectService.ProjectService>;
+  readonly continuationKey?: Ref.Ref<string>;
 }) {
   const layerConfiguredEventSink =
     input.flakyReleaseWrites !== undefined
@@ -498,6 +503,7 @@ function layerTest(input: {
             : layerTestEventSink;
   const layerRegistry = Layer.unwrap(
     makeProviderAdapter(input.state, {
+      ...(input.mcpSessionPolicy ? { mcpSessionPolicy: input.mcpSessionPolicy } : {}),
       failEventStream: input.failEventStream ?? false,
       ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
       ...(input.mcpConfigs === undefined ? {} : { mcpConfigs: input.mcpConfigs }),
@@ -520,7 +526,25 @@ function layerTest(input: {
       ...(input.scopeCloseReached === undefined
         ? {}
         : { scopeCloseReached: input.scopeCloseReached }),
-    }).pipe(Effect.map(ProviderAdapterRegistry.layerSingle)),
+    }).pipe(
+      Effect.map((adapter) =>
+        input.continuationKey === undefined
+          ? ProviderAdapterRegistry.layerSingle(adapter)
+          : Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistryV2, {
+              get: () => Effect.succeed(adapter),
+              list: () => Effect.succeed([adapter.instanceId]),
+              getMetadata: () =>
+                Ref.get(input.continuationKey!).pipe(
+                  Effect.map((continuationKey) => ({
+                    driver: adapter.driver,
+                    continuationKey,
+                    enabled: true,
+                    capabilities: input.capabilities ?? CodexCapabilities,
+                  })),
+                ),
+            }),
+      ),
+    ),
   );
   const layerConfiguredMcpRegistry =
     input.pauseResolve === undefined
@@ -3541,4 +3565,76 @@ it.effect(
       });
       assert.isFalse(denied?.capabilities?.has("device"));
     }),
+);
+
+it.effect.each([true, false])(
+  "MCP startup opt-out %s is independent of unnegotiated capability",
+  (disabled) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const mcpConfigs = yield* Ref.make<
+        ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+      >([]);
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-no-mcp");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        const captured = (yield* Ref.get(mcpConfigs))[0];
+        const stored = yield* (yield* McpProviderSessions.McpProviderSessions).read(threadId);
+        assert.equal(captured !== undefined, !disabled);
+        assert.equal(stored !== undefined, !disabled);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            mcpConfigs,
+            ...(disabled ? { mcpSessionPolicy: "disabled" as const } : {}),
+            capabilities: {
+              ...CodexCapabilities,
+              tools: { ...CodexCapabilities.tools, supportsMcpTools: false },
+            },
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect("rejects reuse after the provider continuation identity changes", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const continuationKey = yield* Ref.make("codex:account:ordinary");
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread-profile-change");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* eventSink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+      });
+      const input = { threadId, providerSessionId, modelSelection, runtimePolicy };
+      yield* manager.open(input);
+      yield* manager.open(input);
+      assert.equal((yield* Ref.get(state)).openCount, 1);
+      yield* Ref.set(continuationKey, "codex:account:cognitive-v1");
+      const result = yield* Effect.exit(manager.open(input));
+      assert.isTrue(Exit.isFailure(result));
+      assert.equal((yield* Ref.get(state)).openCount, 1);
+    }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, continuationKey })));
+  }),
 );

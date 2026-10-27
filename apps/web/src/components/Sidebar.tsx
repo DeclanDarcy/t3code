@@ -220,6 +220,7 @@ import {
 import { SidebarContent, SidebarGroup, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { SidebarHeaderIconButton, SidebarThreadHeader } from "./sidebar/SidebarThreadHeader";
+import { CampaignNavigation } from "./CampaignNavigation";
 import { TooltipProvider } from "./ui/tooltip";
 import { composerDraftHasUserContent, DraftId, useComposerDraftStore } from "../composerDraftStore";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
@@ -2686,6 +2687,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     if (isMobile) setOpenMobile(false);
     openCommandPalette({ open: "new-thread-in" });
   };
+  const handleNewCampaignClick = (event: ReactMouseEvent) => {
+    if (isMobile) setOpenMobile(false);
+    const active = newThreadContext.activeThread ?? newThreadContext.activeDraftThread;
+    const projectRef = active
+      ? scopeProjectRef(active.environmentId, active.projectId)
+      : newThreadContext.defaultProjectRef;
+    if (projectRef && shouldCreateNewThreadInCurrentProject(event.shiftKey, projectGroups.length)) {
+      void handleNewThread(projectRef, { submissionKind: "campaign" });
+    } else openCommandPalette({ open: "new-thread-in", campaign: true });
+  };
 
   const newThreadShortcutLabel =
     shortcutLabelForCommand(keybindings, "chat.new") ??
@@ -2828,6 +2839,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               }
               onNewProject={openAddProjectCommandPalette}
               onNewThread={handleNewThreadClick}
+              onNewCampaign={handleNewCampaignClick}
               newThreadDisabled={projects.length === 0}
               newThreadShortcutLabel={newThreadShortcutLabel}
               newThreadInProjectShortcutLabel={newThreadInProjectShortcutLabel}
@@ -2847,6 +2859,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           </SidebarGroup>
         }
       >
+        <CampaignNavigation />
         <SidebarGroup className="flex-1" role="presentation">
           {isSearchingThreads ? (
             threadSearchResults.length > 0 ? (

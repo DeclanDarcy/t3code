@@ -56,6 +56,9 @@ import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as CampaignController from "./CampaignController.ts";
+import * as CampaignCreation from "./CampaignCreation.ts";
+import * as ExperimentHandoff from "./ExperimentHandoffService.ts";
 
 export const layerEventInfrastructure = Layer.mergeAll(
   OrchestrationEventStore.layer,
@@ -361,7 +364,30 @@ export const layer = Layer.mergeAll(
   layerLegacyV1ThreadImporterProvided,
 );
 
+const layerCampaignController = CampaignController.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      ExperimentHandoff.layer.pipe(Layer.provide(layerThreadManagementProvided)),
+      layerThreadManagementProvided,
+      layerEventSinkProvided,
+      EffectOutbox.layer,
+      layerCommandReceiptStoreProvided,
+    ),
+  ),
+);
+const layerCampaignCreation = CampaignCreation.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      layerCampaignController,
+      layerThreadLaunchProvided,
+      layerThreadManagementProvided,
+    ),
+  ),
+);
+
 export const layerProduction = Layer.mergeAll(
+  layerCampaignController,
+  layerCampaignCreation,
   layer.pipe(Layer.provide(layerProjectService)),
   layerProjectService,
   layerManagedProjectFoldersProvided,

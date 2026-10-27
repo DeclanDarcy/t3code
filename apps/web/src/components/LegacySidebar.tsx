@@ -9,6 +9,7 @@ import {
   Globe2Icon,
   SearchIcon,
   SquarePenIcon,
+  WorkflowIcon,
   TriangleAlertIcon,
 } from "lucide-react";
 import {
@@ -190,6 +191,8 @@ import {
   useThreadSelectionStore,
 } from "../threadSelectionStore";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
+import { CampaignNavigation } from "./CampaignNavigation";
+import { SidebarHeaderIconButton } from "./sidebar/SidebarThreadHeader";
 import {
   archiveSelectedThreadEntries,
   buildMultiSelectThreadContextMenuItems,
@@ -2883,6 +2886,20 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     <SidebarContent
       fixedHeader={
         <SidebarGroup className="z-[1]">
+          <div className="flex items-center justify-end">
+            <SidebarHeaderIconButton
+              label="New campaign"
+              onClick={() => openCommandPalette({ open: "new-thread-in", campaign: true })}
+            >
+              <WorkflowIcon />
+            </SidebarHeaderIconButton>
+            <SidebarHeaderIconButton
+              label="New thread"
+              onClick={() => openCommandPalette({ open: "new-thread-in" })}
+            >
+              <SquarePenIcon />
+            </SidebarHeaderIconButton>
+          </div>
           <SidebarMenu>
             <SidebarMenuItem>
               <CommandDialogTrigger
@@ -2920,6 +2937,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
           </Alert>
         </SidebarGroup>
       ) : null}
+      <CampaignNavigation />
       <LocalSecondaryStatus />
       <SidebarGroup>
         <div className="mb-1 flex items-center justify-between pl-2 pr-1.5">

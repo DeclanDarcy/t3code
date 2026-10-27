@@ -1,4 +1,5 @@
 import { OrchestrationMessageContext } from "./composerContext.ts";
+import { ExperimentHumanGuard } from "./experimentHandoff.ts";
 import { withRecordIdTable } from "./orchestrationV2IdTable.ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -944,6 +945,7 @@ export const OrchestrationV2PendingBackgroundTask = kindUnionWithFallback(
 export type OrchestrationV2PendingBackgroundTask = typeof OrchestrationV2PendingBackgroundTask.Type;
 
 export const OrchestrationV2ProviderThreadNativeMetadata = Schema.Struct({
+  codexCognitiveProfile: Schema.optional(Schema.String),
   modelSelection: Schema.optional(ModelSelection),
   title: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   updatedAt: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -1192,6 +1194,7 @@ export const OrchestrationV2IdleCompaction = Schema.Literals(["beforeCacheExpire
 export type OrchestrationV2IdleCompaction = typeof OrchestrationV2IdleCompaction.Type;
 
 export const OrchestrationV2ConversationMessage = Schema.Struct({
+  codexOutputSchema: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
   notification: Schema.optional(OrchestrationV2Notification),
   ...OrchestrationV2CreationFields,
   scheduledTaskId: Schema.optional(ScheduledTaskId),
@@ -2990,6 +2993,8 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("message.dispatch"),
+    expectedHumanInput: Schema.optional(ExperimentHumanGuard),
+    codexOutputSchema: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
     notification: Schema.optional(OrchestrationV2Notification),
     /** Sends this pending guest message; the server uses the guest's text, not `text`. */
     guestMessageId: Schema.optional(GuestMessageId),
@@ -3119,6 +3124,9 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("runtime-request.respond"),
+    expectedHumanInput: Schema.optional(ExperimentHumanGuard),
+    createdBy: Schema.optional(OrchestrationV2Actor),
+    senderThreadId: Schema.optional(ThreadId),
     commandId: CommandId,
     threadId: ThreadId,
     requestId: RuntimeRequestId,

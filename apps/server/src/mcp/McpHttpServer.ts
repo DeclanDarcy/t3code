@@ -53,6 +53,9 @@ import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import * as OrchestratorHandlers from "./toolkits/orchestrator/handlers.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
+import { ExperimentToolkit } from "./toolkits/experiment/tools.ts";
+import * as ExperimentHandlers from "./toolkits/experiment/handlers.ts";
+import * as ExperimentHandoff from "../orchestration-v2/ExperimentHandoffService.ts";
 import * as PreviewHandlers from "./toolkits/preview/handlers.ts";
 import {
   PreviewSnapshotTool,
@@ -990,6 +993,10 @@ export const layerOrchestratorToolkit = toolkitRegistration(
 ).pipe(Layer.provide(OrchestratorMcpService.layer), Layer.provide(ThreadMetadataMcpService.layer));
 
 export const layerThreadToolkit = toolkitRegistration(ThreadToolkit, ThreadHandlers.layer);
+export const layerExperimentToolkit = toolkitRegistration(
+  ExperimentToolkit,
+  ExperimentHandlers.layer,
+).pipe(Layer.provide(ExperimentHandoff.layer));
 
 const layerWorktreeToolkitRegistration = toolkitRegistration(
   WorktreeToolkit,
@@ -1044,6 +1051,7 @@ export const layerMcpTransport = McpServer.layerHttp({
 export const layer = Layer.mergeAll(
   layerPreviewToolkit,
   layerOrchestratorToolkit,
+  layerExperimentToolkit,
   layerThreadToolkit,
   layerAttachmentToolkit,
   layerProjectRegistration,

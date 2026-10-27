@@ -9,6 +9,8 @@ import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import { memo, use, useState, type ReactNode } from "react";
+import { CognitiveConversationContext } from "../campaignConversation";
+import { campaignRequestPresentation } from "./campaignDecisionPresentation";
 import {
   createMessageAttachmentPreviewProjector,
   selectMessageImageResources,
@@ -302,6 +304,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     (attachment) => !isImageAttachment(attachment) && !isFileAttachment(attachment),
   );
   const userMessage = resolveUserMessagePresentation(row.message);
+  const cognitive = use(CognitiveConversationContext);
   // Messages from other agents fold to one line so the user's own messages stay easy to find.
   const folded = userMessage.attribution === "agent";
   const [expanded, setExpanded] = useState(false);
@@ -610,7 +613,13 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             ) : null}
             <div onCopyCapture={onBodyCopyCapture}>
               <CollapsibleUserMessageBody
-                text={resolvedContext.text}
+                text={
+                  cognitive &&
+                  row.message.createdBy === "agent" &&
+                  row.message.creationSource === "server"
+                    ? campaignRequestPresentation(resolvedContext.text)
+                    : resolvedContext.text
+                }
                 renderContextReference={renderContextReference}
                 skills={ctx.skills}
                 markdownCwd={ctx.markdownCwd}

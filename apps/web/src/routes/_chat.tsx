@@ -205,7 +205,7 @@ function threadRouteTargetKey(target: ThreadRouteTarget | null) {
 
 function ChatRouteLayout() {
   // Render both routes here so draft promotion keeps the same ChatView mounted.
-  const threadTarget = useThreadRouteTarget();
+  const threadTarget = useThreadRouteTarget(false);
   // Read matches, not location, so this agrees with the params useThreadRouteTarget reads.
   const modalOpen = useMatches({
     select: (matches) => matches.some((match) => isAppModalPage(match.pathname)),

@@ -1,5 +1,6 @@
 import {
   CommandId,
+  type ExperimentHumanGuard,
   type OrchestrationV2Run,
   OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
@@ -34,6 +35,7 @@ import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
+import { humanInputIsCurrent } from "./HumanInputRevision.ts";
 
 export class EventSinkWriteError extends Schema.TaggedError<EventSinkWriteError>()(
   "EventSinkWriteError",
@@ -136,6 +138,7 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    readonly expectedHumanInput?: ExperimentHumanGuard;
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
     readonly commandType: string;
@@ -644,6 +647,25 @@ const layerBase: Layer.Layer<
           if (!reserved) {
             const existing = yield* existingCommandResult(input.commandId);
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
+          }
+
+          if (
+            input.expectedHumanInput &&
+            !(yield* humanInputIsCurrent(input.expectedHumanInput).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            ))
+          ) {
+            const receipt: CommandReceiptStore.CommandReceiptV2 = {
+              commandId: input.commandId,
+              threadId: input.threadId,
+              commandType: input.commandType,
+              acceptedAt: input.acceptedAt,
+              resultSequence: yield* eventStore.latestSequence({ threadId: input.threadId }),
+              status: "rejected",
+              error: "Human input changed after this decision; request a fresh cognitive decision.",
+            };
+            yield* commandReceipts.upsert(receipt);
+            return { receipt, storedEvents: [], committed: false as const, cancelledEffectIds: [] };
           }
 
           const normalized = yield* normalizeEvents(input.events);

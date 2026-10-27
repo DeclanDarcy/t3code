@@ -5412,6 +5412,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             payload: { ...sourcePlan, status: "completed" },
           });
 
+    if (
+      command.codexOutputSchema &&
+      (dispatchMode.type === "steer_active" || dispatchMode.type === "restart_active")
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause:
+          "Output schemas require a new or queued turn, not steering or restarting an active turn.",
+      });
+    }
     if (dispatchMode.type === "steer_active" || dispatchMode.type === "restart_active") {
       yield* dispatchSteerIntoRun({
         command,
@@ -5676,6 +5687,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         role: "user",
         text: dispatchText,
         ...(command.context ? { context: command.context } : {}),
+        ...(command.codexOutputSchema ? { codexOutputSchema: command.codexOutputSchema } : {}),
         attachments: command.attachments,
         streaming: false,
         createdAt: now,
@@ -6028,6 +6040,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         role: "user",
         text: dispatchText,
         ...(command.context ? { context: command.context } : {}),
+        ...(command.codexOutputSchema ? { codexOutputSchema: command.codexOutputSchema } : {}),
         attachments: command.attachments,
         streaming: false,
         createdAt: now,
@@ -6717,6 +6730,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       role: "user",
       text: dispatchText,
       ...(command.context ? { context: command.context } : {}),
+      ...(command.codexOutputSchema ? { codexOutputSchema: command.codexOutputSchema } : {}),
       attachments: command.attachments,
       streaming: false,
       createdAt: now,
@@ -8147,7 +8161,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             messageId: MessageId.make(`async-answer:${command.requestId}`),
             text: replies.join("\n\n"),
             attachments: [],
-            createdBy: "user",
+            createdBy: command.createdBy ?? "user",
+            ...(command.senderThreadId ? { senderThreadId: command.senderThreadId } : {}),
             creationSource: "server",
             dispatchMode,
           },
@@ -12263,6 +12278,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const committed = yield* eventSink
       .commitCommand({
         commandId: command.commandId,
+        ...((command.type === "message.dispatch" || command.type === "runtime-request.respond") &&
+        command.expectedHumanInput
+          ? { expectedHumanInput: command.expectedHumanInput }
+          : {}),
         threadId: commandThreadId(command),
         commandType: command.type,
         acceptedAt,

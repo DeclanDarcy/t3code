@@ -59,6 +59,25 @@ const setup = Effect.gen(function* () {
   return registry;
 });
 
+it.effect("campaign creation and retry require the destination orchestration grant", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const registry = yield* setup;
+      for (const tag of [WS_METHODS.campaignsCreate, WS_METHODS.campaignsRetry] as const) {
+        const permission = createCommandPermissions(runtime, tag);
+        registry.set(sessions(env), AsyncResult.success(grant(false)));
+        expect(registry.get(permission.permissionAtom(env))).toBe(false);
+        expect((yield* Effect.result(permission.authorize(registry, env)))._tag).toBe("Failure");
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        yield* permission.authorize(registry, env);
+        expect(registry.get(permission.permissionAtom(env))).toBe(true);
+        registry.set(sessions(other), AsyncResult.success(grant(false)));
+        expect(registry.get(permission.permissionAtom(other))).toBe(false);
+      }
+    }),
+  ),
+);
+
 describe("command permissions", () => {
   it.effect("requires the destination preview grant to close a browser tab", () =>
     Effect.scoped(

@@ -66,6 +66,36 @@ import * as CodexAdapterV2Testkit from "./CodexAdapterV2.testkit.ts";
 const replayTranscriptJson = Schema.fromJsonString(CodexReplay.CodexAppServerReplayTranscript);
 const encodeReplayTranscriptJson = Schema.encodeEffect(replayTranscriptJson);
 const decodeReplayTranscriptJson = Schema.decodeUnknownEffect(replayTranscriptJson);
+it.effect("keeps cognitive output schemas turn-local and omits coding context", () =>
+  Effect.gen(function* () {
+    const params = yield* CodexAdapterV2.buildCodexTurnStartParams({
+      nativeThreadId: "cognitive-native",
+      codexInput: [{ type: "text", text: "Decide.", text_elements: [] }],
+      runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: "/repo" },
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("cognitive"),
+        model: "gpt-6.1-sol",
+        options: [{ id: "reasoningEffort", value: "low" }],
+      },
+      cognitive: true,
+      hasT3Mcp: true,
+      outputSchema: {
+        type: "object",
+        properties: { done: { type: "boolean" } },
+        required: ["done"],
+        additionalProperties: false,
+      },
+    });
+    assert.isUndefined(params.collaborationMode);
+    assert.isUndefined(params.additionalContext);
+    assert.deepEqual(params.outputSchema, {
+      type: "object",
+      properties: { done: { type: "boolean" } },
+      required: ["done"],
+      additionalProperties: false,
+    });
+  }),
+);
 const encodeStringJson = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
 
 describe("CodexAdapterV2 context usage", () => {
@@ -6740,3 +6770,78 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     );
   });
 });
+
+it.effect(
+  "isolates cognitive launch overrides without mutating ordinary settings or environment",
+  () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const crypto = yield* Crypto.Crypto;
+      const serverConfig = yield* makeReplayServerConfig("cognitive-launch").pipe(Effect.orDie);
+      const environment = { T3CODE_CODEX_LAUNCH_ARGS: "-c features.shell_tool=true" };
+      for (const cognitive of [false, true]) {
+        const settings = {
+          ...DEFAULT_CODEX_SETTINGS,
+          ...(cognitive ? { executionProfile: "cognitive-v1" as const } : {}),
+        };
+        let captured:
+          | Parameters<CodexAdapterV2.CodexAppServerClientFactoryShape["open"]>[0]
+          | undefined;
+        const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
+          instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+          settings,
+          environment,
+          crypto,
+          fileSystem,
+          idAllocator,
+          serverConfig,
+          clientFactory: {
+            open: (input) => {
+              captured = input;
+              return Effect.fail(
+                new ProviderAdapter.ProviderAdapterOpenSessionError({
+                  driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+                  providerSessionId: input.providerSessionId,
+                  cause: "stop before native launch",
+                }),
+              );
+            },
+          },
+        });
+        const capabilities = yield* adapter.getCapabilities();
+        assert.equal(adapter.mcpSessionPolicy, cognitive ? "disabled" : undefined);
+        assert.equal(capabilities.tools.supportsMcpTools, !cognitive);
+        assert.equal(capabilities.subagents.supportsSubagents, !cognitive);
+        yield* Effect.exit(
+          adapter.openSession({
+            threadId: ThreadId.make("launch-control"),
+            providerSessionId: ProviderSessionId.make("launch-control"),
+            modelSelection: {
+              instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+              model: "gpt-6.1-sol",
+            },
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          }),
+        );
+        assert.isDefined(captured);
+        if (cognitive) {
+          assert.include(captured!.settings.launchArgs, "--strict-config");
+          assert.isBelow(
+            captured!.settings.launchArgs.indexOf("features.shell_tool=true"),
+            captured!.settings.launchArgs.indexOf("features.shell_tool=false"),
+          );
+          assert.isUndefined(captured!.environment.T3CODE_CODEX_LAUNCH_ARGS);
+        } else {
+          assert.deepEqual(captured!.settings, settings);
+          assert.deepEqual(captured!.environment, environment);
+        }
+        assert.equal(environment.T3CODE_CODEX_LAUNCH_ARGS, "-c features.shell_tool=true");
+      }
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+);

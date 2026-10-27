@@ -296,6 +296,7 @@ type LegacyPersistedComposerDraftStoreState = PersistedComposerDraftStoreState &
   LegacyV2StoreFields;
 
 const PersistedDraftThreadState = Schema.Struct({
+  submissionKind: Schema.optionalKey(Schema.Literals(["thread", "campaign"])),
   threadId: ThreadId,
   environmentId: Schema.String,
   projectId: ProjectId,
@@ -387,6 +388,7 @@ export function composerDraftHasUserContent(
 }
 
 export interface DraftSessionState {
+  submissionKind?: "thread" | "campaign";
   threadId: ThreadId;
   environmentId: EnvironmentId;
   projectId: ProjectId;
@@ -439,6 +441,7 @@ interface ComposerDraftStoreState {
     projectRef: ScopedProjectRef,
     draftId: DraftId,
     options?: {
+      submissionKind?: "thread" | "campaign";
       threadId?: ThreadId;
       branch?: string | null;
       worktreePath?: string | null;
@@ -455,6 +458,7 @@ interface ComposerDraftStoreState {
     projectRef: ScopedProjectRef,
     draftId: DraftId,
     options?: {
+      submissionKind?: "thread" | "campaign";
       threadId?: ThreadId;
       branch?: string | null;
       worktreePath?: string | null;
@@ -470,6 +474,7 @@ interface ComposerDraftStoreState {
   setDraftThreadContext: (
     threadRef: ComposerThreadTarget,
     options: {
+      submissionKind?: "thread" | "campaign";
       branch?: string | null;
       worktreePath?: string | null;
       projectRef?: ScopedProjectRef;
@@ -1388,6 +1393,7 @@ function createDraftThreadState(
   logicalProjectKey: string,
   existingThread: DraftThreadState | undefined,
   options?: {
+    submissionKind?: "thread" | "campaign";
     threadId?: ThreadId;
     branch?: string | null;
     worktreePath?: string | null;
@@ -1425,6 +1431,7 @@ function createDraftThreadState(
   return {
     threadId,
     environmentId: projectRef.environmentId,
+    submissionKind: options?.submissionKind ?? existingThread?.submissionKind ?? "thread",
     projectId: projectRef.projectId,
     logicalProjectKey,
     ...(environmentSelection ? { environmentSelection } : {}),
@@ -1468,6 +1475,7 @@ function draftThreadsEqual(left: DraftThreadState | undefined, right: DraftThrea
   return (
     !!left &&
     left.threadId === right.threadId &&
+    left.submissionKind === right.submissionKind &&
     left.environmentId === right.environmentId &&
     left.projectId === right.projectId &&
     left.logicalProjectKey === right.logicalProjectKey &&
@@ -1602,6 +1610,7 @@ function normalizePersistedDraftThreads(
       }
       const normalizedEnvironmentId = environmentId as EnvironmentId;
       draftThreadsByThreadKey[threadKey] = {
+        submissionKind: candidateDraftThread.submissionKind === "campaign" ? "campaign" : "thread",
         threadId,
         environmentId: normalizedEnvironmentId,
         projectId: projectId as ProjectId,
@@ -2347,6 +2356,7 @@ function toHydratedDraftThreadState(
   persistedDraftThread: PersistedDraftThreadState,
 ): DraftThreadState {
   return {
+    submissionKind: persistedDraftThread.submissionKind ?? "thread",
     threadId: persistedDraftThread.threadId,
     environmentId: persistedDraftThread.environmentId as EnvironmentId,
     projectId: persistedDraftThread.projectId,
@@ -2635,6 +2645,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 ? "manual"
                 : existing.environmentSelection);
             const nextDraftThread: DraftThreadState = {
+              submissionKind: options.submissionKind ?? existing.submissionKind ?? "thread",
               threadId: existing.threadId,
               environmentId: nextProjectRef.environmentId,
               projectId: nextProjectRef.projectId,

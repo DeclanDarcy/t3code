@@ -10,6 +10,7 @@ import type {
 } from "./ProjectionStore.ts";
 import {
   type ChatAttachment,
+  type ExperimentHumanGuard,
   CommandId,
   MessageId,
   OrchestrationV2StopWorkflowError,
@@ -70,6 +71,8 @@ export function withCreationProvenance(
   provenance: ThreadManagementProvenance,
 ): OrchestrationV2Command {
   switch (command.type) {
+    case "runtime-request.respond":
+      return { ...command, createdBy: provenance.createdBy };
     case "thread.create":
     case "message.dispatch":
     case "thread.fork":
@@ -120,6 +123,8 @@ export type ThreadManagementTerminalRunStatus = Extract<
 >;
 
 export interface ThreadManagementSendInput {
+  readonly expectedHumanInput?: ExperimentHumanGuard;
+  readonly codexOutputSchema?: Readonly<Record<string, Schema.Json>>;
   readonly projectId: ProjectId;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
@@ -808,6 +813,8 @@ const make = Effect.gen(function* () {
       ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
       ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
       text: input.text,
+      ...(input.expectedHumanInput ? { expectedHumanInput: input.expectedHumanInput } : {}),
+      ...(input.codexOutputSchema ? { codexOutputSchema: input.codexOutputSchema } : {}),
       attachments: input.attachments,
       ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
       dispatchMode,

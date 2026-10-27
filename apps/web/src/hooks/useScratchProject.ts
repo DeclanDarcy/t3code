@@ -53,11 +53,16 @@ export function useScratchProject() {
     return null;
   };
 
-  const startScratchThread = async (environmentId: EnvironmentId) => {
+  const startScratchThread = async (
+    environmentId: EnvironmentId,
+    submissionKind: "thread" | "campaign" = "thread",
+  ) => {
     const project = await openScratchProject(environmentId);
     if (project) {
-      await handleNewThread(scopeProjectRef(project.environmentId, project.id)).catch(
-        (error: unknown) => reportScratchFailure("Could not start without a project", error),
+      await handleNewThread(scopeProjectRef(project.environmentId, project.id), {
+        submissionKind,
+      }).catch((error: unknown) =>
+        reportScratchFailure("Could not start without a project", error),
       );
     }
   };
